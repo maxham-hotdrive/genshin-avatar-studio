@@ -1,201 +1,324 @@
 'use client'
 
+import { useEffect, useState } from 'react'
+import { useSearchParams, useRouter } from 'next/navigation'
+import { createClient } from '@supabase/supabase-js'
 import Link from 'next/link'
 
-const fileCategories = [
-  {
-    title: '🖼️ Avatar Images',
-    files: [
-      'avatar_2048x2048.png (Original HD)',
-      'avatar_discord_512x512.png',
-      'avatar_twitch_256x256.png',
-      'avatar_twitter_400x400.png'
-    ]
-  },
-  {
-    title: '😄 Emote: Happy',
-    files: [
-      'emote_happy_2048x2048.png (Original)',
-      'emote_happy_twitch_28x28.png',
-      'emote_happy_twitch_56x56.png',
-      'emote_happy_twitch_112x112.png'
-    ]
-  },
-  {
-    title: '😠 Emote: Angry',
-    files: [
-      'emote_angry_2048x2048.png (Original)',
-      'emote_angry_twitch_28x28.png',
-      'emote_angry_twitch_56x56.png',
-      'emote_angry_twitch_112x112.png'
-    ]
-  },
-  {
-    title: '😢 Emote: Sad',
-    files: [
-      'emote_sad_2048x2048.png (Original)',
-      'emote_sad_twitch_28x28.png',
-      'emote_sad_twitch_56x56.png',
-      'emote_sad_twitch_112x112.png'
-    ]
-  },
-  {
-    title: '😏 Emote: Smug',
-    files: [
-      'emote_smug_2048x2048.png (Original)',
-      'emote_smug_twitch_28x28.png',
-      'emote_smug_twitch_56x56.png',
-      'emote_smug_twitch_112x112.png'
-    ]
-  },
-  {
-    title: '📄 Extras',
-    files: [
-      'README.txt (Usage instructions)',
-      'LICENSE.txt (Commercial usage rights)'
-    ]
-  }
-]
+// Initialize Supabase client
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+)
+
+interface Generation {
+  id: string
+  status: string
+  zip_url: string | null
+  paid: boolean
+  config: any
+  created_at: string
+}
+
+interface Payment {
+  id: string
+  status: string
+  amount: number
+  currency: string
+  paid_at: string | null
+  customer_email: string | null
+}
 
 export default function DownloadPage() {
-  const handleDownload = () => {
-    // In real app, this would download the actual ZIP file
-    alert('📥 Download started!\n\nIn the real app, a ZIP file would download now.\n\n(This is a prototype)')
+  const searchParams = useSearchParams()
+  const router = useRouter()
+  const generationId = searchParams.get('generation_id')
+  const sessionId = searchParams.get('session_id')
 
-    // Simulate download
-    const link = document.createElement('a')
-    link.download = 'identity-kit-demo.txt'
-    link.href = 'data:text/plain;charset=utf-8,' + encodeURIComponent('This is a demo file. In the real app, this would be your complete identity kit ZIP.')
-    link.click()
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [generation, setGeneration] = useState<Generation | null>(null)
+  const [payment, setPayment] = useState<Payment | null>(null)
+  const [downloadStarted, setDownloadStarted] = useState(false)
+
+  useEffect(() => {
+    if (!generationId) {
+      setError('Missing generation ID')
+      setLoading(false)
+      return
+    }
+
+    verifyAccessAndLoadData()
+  }, [generationId, sessionId])
+
+  const verifyAccessAndLoadData = async () => {
+    try {
+      setLoading(true)
+
+      // Fetch generation data
+      const { data: genData, error: genError } = await supabase
+        .from('generations')
+        .select('*')
+        .eq('id', generationId)
+        .single()
+
+      if (genError || !genData) {
+        setError('Generation not found')
+        setLoading(false)
+        return
+      }
+
+      // Check if generation is completed
+      if (genData.status !== 'completed') {
+        setError('Generation is not completed yet')
+        setLoading(false)
+        return
+      }
+
+      // Check if generation is paid
+      if (!genData.paid) {
+        setError('This generation has not been paid for')
+        setLoading(false)
+        return
+      }
+
+      // Fetch payment data
+      const { data: paymentData, error: paymentError } = await supabase
+        .from('payments')
+        .select('*')
+        .eq('generation_id', generationId)
+        .eq('status', 'succeeded')
+        .single()
+
+      if (paymentError || !paymentData) {
+        setError('Payment not found or not completed')
+        setLoading(false)
+        return
+      }
+
+      setGeneration(genData)
+      setPayment(paymentData)
+      setLoading(false)
+
+    } catch (err) {
+      console.error('Error verifying access:', err)
+      setError('Failed to verify access')
+      setLoading(false)
+    }
+  }
+
+  const handleDownload = async () => {
+    if (!generation?.zip_url) {
+      setError('Download URL not available')
+      return
+    }
+
+    try {
+      setDownloadStarted(true)
+
+      // Get signed URL from Supabase Storage
+      const urlParts = generation.zip_url.split('/')
+      const fileName = urlParts[urlParts.length - 1]
+      const bucketName = 'avatar-packs'
+
+      const { data, error } = await supabase.storage
+        .from(bucketName)
+        .createSignedUrl(fileName, 3600) // Valid for 1 hour
+
+      if (error || !data) {
+        setError('Failed to generate download link')
+        setDownloadStarted(false)
+        return
+      }
+
+      // Trigger download
+      window.location.href = data.signedUrl
+
+    } catch (err) {
+      console.error('Download error:', err)
+      setError('Failed to start download')
+      setDownloadStarted(false)
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="genshin-bg min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-[var(--genshin-gold)] mx-auto mb-4"></div>
+          <p className="text-white text-lg">Verifying your access...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="genshin-bg min-h-screen flex items-center justify-center">
+        <div className="max-w-md mx-auto px-4 text-center">
+          <div className="bg-red-500/10 border-2 border-red-500 rounded-2xl p-8 mb-6">
+            <div className="text-5xl mb-4">⚠️</div>
+            <h1 className="text-2xl font-bold text-white mb-3">Access Denied</h1>
+            <p className="text-gray-300 mb-6">{error}</p>
+          </div>
+          <Link
+            href="/"
+            className="inline-block bg-gradient-to-r from-[var(--genshin-gold)] to-[var(--genshin-blue)] text-white font-bold px-8 py-3 rounded-full transition-transform hover:scale-105"
+          >
+            Return to Home
+          </Link>
+        </div>
+      </div>
+    )
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-[#0f0c29] via-[#302b63] to-[#24243e] text-white flex items-center justify-center">
-      <div className="max-w-[900px] text-center px-5 py-10">
-        <div className="text-8xl mb-8 animate-bounce-in">🎉</div>
-        <h1 className="text-4xl md:text-5xl font-bold mb-5 bg-gradient-to-r from-[#667eea] to-[#764ba2] bg-clip-text text-transparent">
-          Your Identity Kit is Ready!
-        </h1>
-        <p className="text-gray-300 text-xl mb-10">
-          Thank you for your purchase. Download link below.
-        </p>
-
-        {/* Download Box */}
-        <div className="bg-white/5 backdrop-blur-md rounded-2xl p-10 border-2 border-[rgba(102,126,234,0.3)] my-10">
-          <button
-            className="w-full px-6 py-6 bg-gradient-to-br from-[#51cf66] to-[#37b24d] rounded-2xl text-white text-2xl font-semibold transition-all hover:-translate-y-1 hover:shadow-[0_10px_30px_rgba(81,207,102,0.5)] mb-5"
-            onClick={handleDownload}
-          >
-            📥 Download Identity Kit (ZIP)
-          </button>
-          <div className="text-gray-400 text-sm mt-3">
-            identity-kit-hoyoverse-xxx.zip • ~8.5 MB
+    <div className="genshin-bg min-h-screen text-white">
+      <div className="container mx-auto px-4 py-10">
+        <div className="max-w-3xl mx-auto">
+          {/* Success Header */}
+          <div className="text-center mb-12">
+            <div className="text-6xl mb-4">✅</div>
+            <h1 className="text-4xl md:text-5xl font-bold mb-3 bg-gradient-to-r from-[var(--genshin-gold)] to-[var(--genshin-blue)] bg-clip-text text-transparent">
+              Payment Successful!
+            </h1>
+            <p className="text-xl text-gray-300">
+              Your Genshin Impact Avatar Pack is ready to download
+            </p>
           </div>
-        </div>
 
-        {/* Included Files */}
-        <div className="bg-black/30 rounded-2xl p-8 my-8 text-left">
-          <h3 className="text-[#667eea] text-xl font-bold mb-5">📦 What's Inside the ZIP:</h3>
-          {fileCategories.map((category, index) => (
-            <div key={index} className="mb-5">
-              <h4 className="text-white font-semibold mb-3">{category.title}</h4>
-              <ul className="pl-5 space-y-2">
-                {category.files.map((file, fileIndex) => (
-                  <li key={fileIndex} className="text-gray-300 text-sm">
-                    📄 {file}
-                  </li>
-                ))}
-              </ul>
+          {/* Download Card */}
+          <div className="bg-white/8 backdrop-blur-md rounded-2xl p-8 border-2 border-[var(--genshin-gold)] mb-8">
+            <h2 className="text-2xl font-bold mb-6 text-[var(--genshin-gold)]">
+              📦 Your Avatar Pack
+            </h2>
+
+            {/* Order Details */}
+            <div className="space-y-4 mb-8">
+              <div className="flex justify-between items-center py-3 border-b border-white/10">
+                <span className="text-gray-400">Order ID</span>
+                <span className="text-white font-mono text-sm">{payment?.id.slice(0, 8)}...</span>
+              </div>
+              <div className="flex justify-between items-center py-3 border-b border-white/10">
+                <span className="text-gray-400">Amount Paid</span>
+                <span className="text-white font-bold">${(payment?.amount || 0) / 100} {payment?.currency.toUpperCase()}</span>
+              </div>
+              <div className="flex justify-between items-center py-3 border-b border-white/10">
+                <span className="text-gray-400">Payment Date</span>
+                <span className="text-white">{payment?.paid_at ? new Date(payment.paid_at).toLocaleDateString() : 'N/A'}</span>
+              </div>
+              {payment?.customer_email && (
+                <div className="flex justify-between items-center py-3 border-b border-white/10">
+                  <span className="text-gray-400">Receipt sent to</span>
+                  <span className="text-white">{payment.customer_email}</span>
+                </div>
+              )}
             </div>
-          ))}
-        </div>
 
-        {/* Usage Guide */}
-        <div className="bg-[rgba(102,126,234,0.1)] border border-[rgba(102,126,234,0.3)] rounded-2xl p-8 my-8 text-left">
-          <h3 className="text-[#667eea] text-xl font-bold mb-5">🚀 Quick Start Guide</h3>
+            {/* Download Button */}
+            <button
+              onClick={handleDownload}
+              disabled={downloadStarted}
+              className="w-full bg-gradient-to-r from-[var(--genshin-gold)] to-[var(--genshin-blue)] text-white font-bold px-8 py-4 rounded-full transition-all hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {downloadStarted ? 'Starting Download...' : '⬇️ Download Avatar Pack (ZIP)'}
+            </button>
 
-          <div className="mb-5">
-            <h4 className="text-white font-semibold mb-2">For Discord:</h4>
-            <p className="text-gray-300 text-sm leading-relaxed">
-              1. Open Discord → User Settings → My Account<br />
-              2. Click "Change Avatar"<br />
-              3. Upload <strong>avatar_discord_512x512.png</strong><br />
-              4. For server emojis: Server Settings → Emoji → Upload 112x112 versions
+            <p className="text-sm text-gray-400 mt-4 text-center">
+              The download link is valid for 1 hour
             </p>
           </div>
 
-          <div className="mb-5">
-            <h4 className="text-white font-semibold mb-2">For Twitch:</h4>
-            <p className="text-gray-300 text-sm leading-relaxed">
-              1. Go to Creator Dashboard → Settings → Channel<br />
-              2. Upload <strong>avatar_twitch_256x256.png</strong> as profile picture<br />
-              3. For emotes: Settings → Affiliate/Partner → Emotes<br />
-              4. Upload all three sizes (28, 56, 112) for each emote
+          {/* What's Included */}
+          <div className="bg-white/5 backdrop-blur-sm rounded-2xl p-8 border border-[rgba(244,213,141,0.2)] mb-8">
+            <h3 className="text-xl font-bold mb-4 text-[var(--genshin-gold)]">
+              📋 What's Included
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+              <div className="flex items-start gap-3">
+                <span className="text-[var(--genshin-gold)]">✓</span>
+                <div>
+                  <div className="font-semibold text-white">Gaming Platforms (5)</div>
+                  <div className="text-gray-400">Steam, Xbox, PlayStation, Epic, Nintendo</div>
+                </div>
+              </div>
+              <div className="flex items-start gap-3">
+                <span className="text-[var(--genshin-gold)]">✓</span>
+                <div>
+                  <div className="font-semibold text-white">Social Media (6)</div>
+                  <div className="text-gray-400">Discord, Twitter, Instagram, Facebook, LinkedIn, TikTok</div>
+                </div>
+              </div>
+              <div className="flex items-start gap-3">
+                <span className="text-[var(--genshin-gold)]">✓</span>
+                <div>
+                  <div className="font-semibold text-white">Streaming (3)</div>
+                  <div className="text-gray-400">Twitch, YouTube, Kick</div>
+                </div>
+              </div>
+              <div className="flex items-start gap-3">
+                <span className="text-[var(--genshin-gold)]">✓</span>
+                <div>
+                  <div className="font-semibold text-white">High-Res & Wallpapers (5)</div>
+                  <div className="text-gray-400">4K, Transparent, Print, Mobile, Desktop</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Usage Guide */}
+          <div className="bg-white/5 backdrop-blur-sm rounded-2xl p-8 border border-[rgba(244,213,141,0.2)] mb-8">
+            <h3 className="text-xl font-bold mb-4 text-[var(--genshin-gold)]">
+              📖 Quick Start Guide
+            </h3>
+            <ol className="space-y-3 text-gray-300">
+              <li className="flex gap-3">
+                <span className="font-bold text-[var(--genshin-gold)]">1.</span>
+                <span>Extract the ZIP file to access all 20 avatar files</span>
+              </li>
+              <li className="flex gap-3">
+                <span className="font-bold text-[var(--genshin-gold)]">2.</span>
+                <span>Navigate to the folder for your desired platform (e.g., 01-social-media)</span>
+              </li>
+              <li className="flex gap-3">
+                <span className="font-bold text-[var(--genshin-gold)]">3.</span>
+                <span>Upload the avatar to your profile (file names indicate platform and size)</span>
+              </li>
+              <li className="flex gap-3">
+                <span className="font-bold text-[var(--genshin-gold)]">4.</span>
+                <span>Read the included README.txt for detailed usage instructions</span>
+              </li>
+            </ol>
+          </div>
+
+          {/* License Info */}
+          <div className="bg-white/5 backdrop-blur-sm rounded-2xl p-6 border border-[rgba(244,213,141,0.2)] mb-8">
+            <h3 className="text-lg font-bold mb-2 text-[var(--genshin-gold)]">
+              📜 Commercial License
+            </h3>
+            <p className="text-sm text-gray-400">
+              You have full rights to use this avatar for personal and commercial purposes.
+              This includes streaming, content creation, and merchandise. See README.txt for full terms.
             </p>
           </div>
 
-          <div className="mb-5">
-            <h4 className="text-white font-semibold mb-2">For Twitter/X:</h4>
-            <p className="text-gray-300 text-sm leading-relaxed">
-              1. Profile → Edit Profile<br />
-              2. Upload <strong>avatar_twitter_400x400.png</strong>
-            </p>
+          {/* Action Buttons */}
+          <div className="flex flex-col sm:flex-row gap-4 justify-center">
+            <Link
+              href="/"
+              className="inline-block text-center bg-white/10 hover:bg-white/20 text-white font-bold px-8 py-3 rounded-full transition-all"
+            >
+              Create Another Avatar
+            </Link>
+            <a
+              href="mailto:support@example.com"
+              className="inline-block text-center bg-white/10 hover:bg-white/20 text-white font-bold px-8 py-3 rounded-full transition-all"
+            >
+              Contact Support
+            </a>
           </div>
-
-          <div>
-            <h4 className="text-white font-semibold mb-2">Commercial Usage:</h4>
-            <p className="text-gray-300 text-sm leading-relaxed">
-              ✅ You have full commercial rights to use these images for:<br />
-              • Streaming overlays<br />
-              • Merchandise (if you're the streamer)<br />
-              • Social media branding<br />
-              • YouTube thumbnails<br />
-              <br />
-              ❌ You may NOT:<br />
-              • Resell the raw images to others<br />
-              • Claim you created them manually
-            </p>
-          </div>
-        </div>
-
-        {/* Action Buttons */}
-        <div className="flex flex-col md:flex-row gap-4 my-10">
-          <Link
-            href="/"
-            className="flex-1 px-6 py-5 bg-white/10 rounded-xl text-white font-semibold transition-all hover:bg-white/15 border border-white/20"
-          >
-            🏠 Back to Home
-          </Link>
-          <Link
-            href="/configure"
-            className="flex-1 px-6 py-5 bg-gradient-to-br from-[#667eea] to-[#764ba2] rounded-xl text-white font-semibold transition-all hover:-translate-y-0.5"
-          >
-            ✨ Create Another Kit
-          </Link>
-        </div>
-
-        {/* Thank You */}
-        <div className="bg-white/5 rounded-2xl p-8 my-12">
-          <h3 className="text-xl font-bold mb-4">💙 Thank You!</h3>
-          <p className="text-gray-300 text-sm leading-loose">
-            We hope you love your new identity kit! If you have any issues or questions,
-            please contact us at support@animeidentitykit.com<br /><br />
-            <strong>Need changes?</strong> Email us within 7 days for a free regeneration or full refund.<br /><br />
-            <strong>Share your creation!</strong> Tag us on Twitter @AnimeIdentityKit for a chance to be featured!
-          </p>
         </div>
       </div>
-
-      <style jsx>{`
-        @keyframes bounce-in {
-          0% { transform: scale(0); }
-          50% { transform: scale(1.2); }
-          100% { transform: scale(1); }
-        }
-        .animate-bounce-in {
-          animation: bounce-in 0.8s;
-        }
-      `}</style>
     </div>
   )
 }
